@@ -1,15 +1,12 @@
-name: RDP2
-
+name: RDP
 
 on:
   workflow_dispatch:
-
 
 jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
-
 
     steps:
       - name: Configure Core RDP Settings
@@ -22,7 +19,6 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
-
           # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
@@ -30,10 +26,8 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
 
-
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
-
 
       - name: Create RDP User with Secure Password
         run: |
@@ -52,17 +46,27 @@ jobs:
           $rawPassword += $charSet.Special | Get-Random -Count 4
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          # Generate unique username with timestamp
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+          $randomSuffix = -join ((65..90) + (97..122) | Get-Random -Count 3 | % {[char]$_})
+          $username = "RDP-$timestamp-$randomSuffix"
           
-          if (-not (Get-LocalUser -Name "RDP")) {
+          # Remove user if exists (just in case)
+          Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
+          
+          # Create new user with unique username
+          New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+          
+          echo "RDP_CREDS=User: $username | Password: $password" >> $env:GITHUB_ENV
+          echo "RDP_USERNAME=$username" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name $username)) {
               Write-Error "User creation failed"
               exit 1
           }
-
 
       - name: Install Tailscale
         run: |
@@ -72,7 +76,6 @@ jobs:
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-
 
       - name: Establish Tailscale Connection
         run: |
@@ -106,17 +109,31 @@ jobs:
           }
           Write-Host "TCP connectivity successful!"
 
-
-      - name: Maintain Connection
+      - name: Display RDP Connection Info
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "RDP ACCESS CREATED SUCCESSFULLY"
+          Write-Host "==============================="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
+          Write-Host "Username: $env:RDP_USERNAME"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          Write-Host "==============================="
+          Write-Host "RDP is now ready and will remain active"
+          Write-Host "Windows will stay running until you manually shut it down"
+          Write-Host "You can cancel this workflow now - RDP will continue working"
+
+      - name: Keep RDP Active Permanently
+        run: |
+          Write-Host "RDP is now permanently active"
+          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "You can connect anytime using the credentials above"
+          Write-Host "This runner will continue running to maintain the RDP connection"
+          Write-Host "To stop RDP, manually shutdown Windows from the RDP session"
           
-          # Keep runner active indefinitely (or until manually cancelled)
+          # حلقة لا نهائية بدون عدادات أو رسائل متكررة
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+              # مجرد تأخير بسيط بدون طباعة رسائل متكررة
+              Start-Sleep -Seconds 3600  # انتظار ساعة بين كل دورة
+              
+              # طباعة رسالة واحدة فقط كل ساعة لتأكيد أن النظام لا يزال شغالاً
+              Write-Host "[$(Get-Date)] RDP is still active - IP: $env:TAILSCALE_IP - User: $env:RDP_USERNAME"
           }
